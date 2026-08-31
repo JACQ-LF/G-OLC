@@ -66,7 +66,6 @@ r, rdot, theta, thetadot = sol.y
 
 
 
-
 # Changement de repère : polaire -> cartésien
 x = r * np.cos(theta)
 y = r * np.sin(theta)
