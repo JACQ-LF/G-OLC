@@ -19,17 +19,17 @@ M0 = 28.975e-3 #Masse molarie de l'air
 R = 8.314 #Constante de gaz parfaits
 
 # --- Spacecraft Parameters ---
-m_a = 10000.0       # masse à vide (kg)
-m_f = 395000.0       # masse de carburant initiale (kg)
-Dm0 = 10*350.0  # débit massique (kg/s)
+m_a = 0.024*3e6       # masse à vide (kg)
+m_f = 3e6      # masse de carburant initiale (kg)
+Dm0 = 14000  # débit massique (kg/s)
 Dmin = Dm0 / 100
 Dmax = Dm0
-V_e = 3.5e3
+V_e = 2.5e3
 C_f = 0.01
 S = 16 * np.pi
 
 # --- Paramètres (à remplacer par tes vraies valeurs) ---
-phi_dot = np.pi/180.0 *0.36#°/s
+phi_dot = np.pi/180.0 *0.34#°/s
 
 delta_V = V_e * np.log((m_a+m_f)/m_a)
 print(delta_V)
@@ -72,6 +72,7 @@ def air_temp(r):
 
 # --- Paramètre cible ---
 a_cible = 3 * 9.81   # accélération que tu veux maintenir (m/s^2) — à ajuster
+RO = 200e3 #Oribte désirée
 
 def Dm(m, a_target=a_cible):
     """Débit massique nécessaire pour maintenir l'accélération a_target,
@@ -84,8 +85,9 @@ def poussee(Dm_val):
     return Dm_val * V_e
 
 
-def phi_t(t):
-    return min(np.sqrt(phi_dot * t + 1), np.pi / 2)
+def phi_t(t,r):
+    h = r-R_T
+    return min((((np.pi/2)/(RO))*(h - RO) + np.pi / 2), np.pi / 2)
 
 
 def drag(r, rdot, thetadot, m):
@@ -95,6 +97,20 @@ def drag(r, rdot, thetadot, m):
     rho = M0 * air_pressure(r) / (R * air_temp(r))
     return -C_f * S / (2 * m) * rho * v
 
+def pitch_angle(t, r, rdot, theta, thetadot):
+    t_kick = 54.8  # durée du kick, en secondes
+    angle_kick = np.radians(3)  # inclinaison du kick, typiquement 1 à 5 degrés
+
+    if t < t_kick:
+        # Phase de kick : légère inclinaison fixe
+        return angle_kick
+    else:
+        # Gravity turn : poussée alignée sur le vecteur vitesse
+        v_r     = rdot
+        v_theta = r * thetadot
+        if v_r == 0 and v_theta == 0:
+            return 0.0
+        return np.arctan2(v_theta, v_r)
 
 def f(t, y):
     r, rdot, theta, thetadot, m = y          # <-- masse ajoutée comme état
@@ -106,11 +122,13 @@ def f(t, y):
         Dm_t = 0.0
 
     T = poussee(Dm_t)
-    phi = phi_t(t)
+    phi = phi_t(t,r)
     d = drag(r, rdot, thetadot, m)
 
-    r_ddot     = (T / m) * np.cos(phi) + r * thetadot**2 - GM_T / r**2 + d * rdot
-    theta_ddot = (T * np.sin(phi)) / (r * m) - 2 * (rdot * thetadot) / r + d * thetadot
+    gamma = pitch_angle(t, r, rdot, theta, thetadot)
+
+    r_ddot     = (T / m) * np.cos(gamma) + r * thetadot**2 - GM_T / r**2 + d * rdot
+    theta_ddot = (T * np.sin(gamma)) / (r * m) - 2 * (rdot * thetadot) / r + d * thetadot
     m_dot      = -Dm_t                        # masse diminue avec le débit
 
     return [rdot, r_ddot, thetadot, theta_ddot, m_dot]
@@ -158,21 +176,42 @@ Dm_t_array = np.array([
     for mi in m
 ])
 
-# --- Tracé combiné avec subplots ---
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 
-# Sous-plot 1 : trajectoire
-ax1.plot(x, y, label="courbe", color='blue')
-ax1.fill(x_disque, y_disque, alpha=0.3, color='orange', label="disque")
+# --- Recalcul de l'accélération de poussée le long de la trajectoire ---
+T_array = Dm_t_array * V_e          # poussée réelle (N) à chaque instant
+a_array = T_array / m               # accélération de poussée (m/s^2)
+
+# --- Tracé combiné avec subplots ---
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
+
+# Sous-plot 1 : trajectoire colorée selon l'accélération
+points = np.array([x, y]).T.reshape(-1, 1, 2)
+segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+norm = Normalize(vmin=a_array.min(), vmax=a_array.max())
+lc = LineCollection(segments, cmap='plasma', norm=norm)
+lc.set_array(a_array)   # couleur = accélération moyenne entre 2 points consécutifs
+lc.set_linewidth(2.5)
+
+line = ax1.add_collection(lc)
+ax1.fill(x_disque, y_disque, alpha=0.3, color='orange', label="Terre")
+
+ax1.set_xlim(x.min() - 1e5, x.max() + 1e5)
+ax1.set_ylim(y.min() - 1e5, y.max() + 1e5)
 ax1.set_aspect('equal')
 ax1.axhline(0, color='gray', lw=0.5)
 ax1.axvline(0, color='gray', lw=0.5)
 ax1.set_xlabel("x")
 ax1.set_ylabel("y")
-ax1.set_title("Changement de repère polaire → cartésien")
-ax1.legend()
+ax1.set_title("Trajectoire colorée selon l'accélération de poussée")
+ax1.legend(loc='upper right')
 
-# Sous-plot 2 : débit massique en fonction du temps
+cbar = fig.colorbar(line, ax=ax1)
+cbar.set_label("Accélération de poussée (m/s²)")
+
+# Sous-plot 2 : débit massique en fonction du temps (inchangé)
 ax2.plot(sol.t, Dm_t_array)
 ax2.axhline(Dmax, color='green', linestyle='--', label="Dmax")
 ax2.axhline(Dmin, color='orange', linestyle='--', label="Dmin")
